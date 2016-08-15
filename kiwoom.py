@@ -1,5 +1,7 @@
+# -*- coding: utf-8 -*-
 import sys
 import logging
+import logging.config
 from collections import defaultdict
 from datetime import datetime
 from PyQt5.QtWidgets import QApplication, QMainWindow
@@ -7,8 +9,59 @@ from PyQt5.QAxContainer import QAxWidget
 import code as CODE
 from database import Database
 
-logging.basicConfig(level=logging.DEBUG, format="[%(asctime)-15s] (%(filename)s:%(lineno)d) %(name)s:%(levelname)s - %(message)s")
+SCREEN_CONDITION_SEARCH = '0001'
+
+SCREEN_BUY_STOCK = '0010'
+SCREEN_SELL_STOCK = '0011'
+
 logger = logging.getLogger(__name__)
+logging.config.dictConfig({
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '[%(asctime)-15s] (%(filename)s:%(lineno)d) %(name)s:%(levelname)s - %(message)s'
+        }
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'level': 'DEBUG',
+            'formatter': 'standard',
+            'stream': 'ext://sys.stdout'
+        },
+
+        'file_handler': {
+            'class': 'logging.FileHandler',
+            'level': 'DEBUG',
+            'formatter': 'standard',
+            'filename': './logs/trading-' + datetime.now().strftime("%Y%m%d") + '.log',
+            'encoding': 'utf-8'
+        },
+
+        "real_handler": {
+            'class': 'logging.FileHandler',
+            'level': 'DEBUG',
+            'formatter': 'standard',
+            'filename': './logs/real-' + datetime.now().strftime("%Y%m%d") + '.log',
+            'encoding': 'utf-8'
+        }
+    },
+    'loggers': {
+        'real': {
+            'handlers': ["real_handler"],
+            'level': 'DEBUG',
+            'propagate': True
+        }
+    },
+
+    "root": {
+        "level": "DEBUG",
+        "handlers": ["console", "file_handler"]
+    }
+})
+
+realDataLogger = logging.getLogger("real")
 
 
 class TradingWindow(QMainWindow):
@@ -22,7 +75,7 @@ class TradingWindow(QMainWindow):
         self.used = []
 
         # DB 연결
-        # self.db = Database()
+        self.db = Database()
 
         self.kiwoom = QAxWidget("KHOPENAPI.KHOpenAPICtrl.1")
 
@@ -70,7 +123,7 @@ class TradingWindow(QMainWindow):
         firew_secgb = self.kiwoom.GetLoginInfo("FIREW_SECGB")
 
         # 계좌는 복수개이기때문에 ; 로 split
-        accno = ret_accno.split(';')[:len(ret_accno.split(';')) - 1]
+        accno = ret_accno.split(';')[:-1]
 
         login_info = dict(account_cnt=account_cnt, accno=accno, user_id=user_id, user_name=user_name,
                           key_bsecgb=key_bsecgb, firew_secgb=firew_secgb)
@@ -101,6 +154,10 @@ class TradingWindow(QMainWindow):
             logger.info("로그인 성공")
 
             self.user = self.get_login_info()
+
+            # 장시작시간 실세간 추가
+            # self.kiwoom.SetRealReg("REAL002", "", "215;20;214;", "0")
+
             # 조건검색 시작
             self.kiwoom.GetConditionLoad()
 
@@ -121,10 +178,14 @@ class TradingWindow(QMainWindow):
         sRQName . CommRqData의 sRQName과 매핑되는 이름이다.
         sTrCode . CommRqData의 sTrCode과 매핑되는 이름이다.
         """
-        print('OnReceiveTrData: ',
+        logger.debug('OnReceiveTrData: %s',
               dict(sScrNo=sScrNo, sRQName=sRQName, sTrCode=sTrCode, sRecordName=sRecordName, sPreNext=sPreNext,
                    nDataLength=nDataLength, sErrorCode=sErrorCode, sMessage=sMessage, sSplmMsg=sSplmMsg))
-        # self.CommGetData(sTrCode, "", sRQName, 0, "종목명")
+
+        count = self.kiwoom.GetRepeatCnt(sTrCode, sRQName)
+        for i in range(0, count):
+            self.kiwoom.GetCommData(sTrCode, sRQName, i, )
+
 
     def OnReceiveRealData(self, sJongmokCode, sRealType, sRealData):
         """OnReceiveRealData: 실시간데이터를 받은 시점을 알려준다.
@@ -134,16 +195,16 @@ class TradingWindow(QMainWindow):
         sRealType . 리얼타입
         sRealData . 실시간 데이터전문
         """
-        # logger.debug('OnReceiveRealData: %s', dict(sJongmokCode=sJongmokCode, sRealType=sRealType, sRealData=sRealData))
-        if sRealType == "주식체결":
-            # logger.debug("code: %s, real_data: %s", sJongmokCode, sRealData)
-            # logger.debug("종목: %s, current: %s", sJongmokCode, sRealData.split('\t')[1].replace('+', ''))
-            price = int(sRealData.split('\t')[1].replace('+', '').replace('-', ''))  # 현재가
-            sell = int(sRealData.split('\t')[4].replace('+', '').replace('-', ''))  # (최우선) 매도호가
-            buy = int(sRealData.split('\t')[5].replace('+', '').replace('-', ''))  # (최우선) 매수호가
-            # self.printData(sJongmokCode, sRealData.split('\t'))
-
-            self.brain(dict(code=sJongmokCode, price=price, sell=sell, buy=buy))
+        logger.debug('OnReceiveRealData: %s', dict(sJongmokCode=sJongmokCode, sRealType=sRealType, sRealData=sRealData))
+        # if sRealType == "주식체결":
+        #     # logger.debug("code: %s, real_data: %s", sJongmokCode, sRealData)
+        #     # logger.debug("종목: %s, current: %s", sJongmokCode, sRealData.split('\t')[1].replace('+', ''))
+        #     price = int(sRealData.split('\t')[1].replace('+', '').replace('-', ''))  # 현재가
+        #     sell = int(sRealData.split('\t')[4].replace('+', '').replace('-', ''))  # (최우선) 매도호가
+        #     buy = int(sRealData.split('\t')[5].replace('+', '').replace('-', ''))  # (최우선) 매수호가
+        #     # self.printData(sJongmokCode, sRealData.split('\t'))
+        #
+        #     self.brain(dict(code=sJongmokCode, price=price, sell=sell, buy=buy))
 
     def printData(self, jongmok, data):
         logger.debug("종목: %s", jongmok)
@@ -191,10 +252,10 @@ class TradingWindow(QMainWindow):
             status = 3
 
         if status == 1:
-            self.sendOrder(data['code'], 10)
+            self.sendOrder(data['code'], 100)
             logger.info('[1. 매수] 종목: %s, 매수가: %s', data['code'], data['price'])
         elif status == 3:
-            self.sendSell(data['code'], 10)
+            self.sendSell(data['code'], 100)
             logger.info('[3. 매도] 종목: %s, 현재가: %s, 고가: %s, 매수가: %s, 수익률: %s', data['code'], data['price'],
                          self.watch[data['code']]['high'], self.watch[data['code']]['buy'],
                          (self.watch[data['code']]['current'] - self.watch[data['code']]['buy']) /
@@ -248,13 +309,13 @@ class TradingWindow(QMainWindow):
         sRQName . CommRqData의 sRQName 와 매핑된다.
         sTrCode . CommRqData의 sTrCode 와 매핑된다.
         """
-        print("-----------------------")
-        print("- OnReceiveMsg: ", dict(sScrNo=sScrNo, sRQName=sRQName, sTrCode=sTrCode, sMsg=sMsg))
-        print("화면번호: ", sScrNo)
-        print("사용자구분명: ", sRQName)
-        print("Tran 명: ", sTrCode)
-        print("서버메시지: ", sMsg)
-        print("-----------------------")
+        logger.debug("-----------------------")
+        logger.debug("OnReceiveMsg: %s", dict(sScrNo=sScrNo, sRQName=sRQName, sTrCode=sTrCode, sMsg=sMsg))
+        logger.debug("화면번호: %s", sScrNo)
+        logger.debug("사용자구분명: %s", sRQName)
+        logger.debug("Tran 명: %s", sTrCode)
+        logger.debug("서버메시지: %s", sMsg)
+        logger.debug("-----------------------")
 
     def OnReceiveChejanData(self, sGubun, nItemCnt, sFidList):
         """OnReceiveChejanData: 체결데이터를 받은 시점을 알려준다.
@@ -270,15 +331,24 @@ class TradingWindow(QMainWindow):
         try:
             gubun = {"0": "주문체결통보", "1": "잔고통보", "3": "특이신호"}
 
-            print("-----------------------")
-            print("- OnReceiveChejanData: ", dict(sGubun=sGubun, nItemCnt=nItemCnt, sFidList=sFidList))
-            print("체결구분: ", gubun[sGubun])
-            print("아이템갯수: ", nItemCnt)
+            logger.debug("-----------------------")
+            logger.debug("OnReceiveChejanData: %s", dict(sGubun=sGubun, nItemCnt=nItemCnt, sFidList=sFidList))
+            logger.debug("체결구분: %s", gubun[sGubun])
+
+            data = []
             for fid in sFidList.split(";"):
-                logger.debug("%s: %s", CODE.get_fid_msg(fid), self.kiwoom.GetChejanData(int(fid)))
-            print("-----------------------")
+                fid_name = CODE.get_fid_msg(fid)
+                fid_data = self.kiwoom.GetChejanData(int(fid))
+                logger.debug("%s: %s", fid_name, fid_data)
+                data.append(fid_data)
+            logger.debug("-----------------------")
+
+            if sGubun == "0" and data[5] == "체결":
+                # 주문체결통보
+                self.db.insert_ord_data(data)
+
         except Exception as e:
-            logger.exception(e)
+            logger.exception(e, exc_info=True)
 
     def OnReceiveRealCondition(self, strCode, strType, strConditionName, strConditionIndex):
         """OnReceiveRealCondition: 조건검색 실시간 편입,이탈 종목을 받을 시점을 알려준다.
@@ -294,9 +364,8 @@ class TradingWindow(QMainWindow):
         """
         # logger.debug('OnReceiveRealCondition: %s', dict(strCode=strCode, strType=strType, strConditionName=strConditionName,
                                                 # strConditionIndex=strConditionIndex))
-        # logger.debug("watch list length: %s", len(self.watch))
-        # if strType == "I" and len(self.watch) <= 10:
-        #     self.kiwoom.SetRealReg("REAL001", strCode, "10;", "1")
+        if strType == "I":  # and len(self.watch) <= 10:
+            self.kiwoom.SetRealReg("REAL001", strCode, "10;", "1")
 
     def OnReceiveTrCondition(self, sScrNo, strCodeList, strConditionName, nIndex, nNext):
         """OnReceiveTrCondition: 조건검색 조회응답으로 종목리스트를 구분자(“;”)로 붙어서 받는 시점.
@@ -323,16 +392,15 @@ class TradingWindow(QMainWindow):
             logger.debug('OnReceiveConditionVer: %s', dict(lRet=lRet, sMsg=sMsg))
 
             if lRet == 1:
-                conditionList = self.kiwoom.GetConditionNameList()
-                logger.info("조건검색 조회성공: %s", conditionList)
+                condition_list = self.kiwoom.GetConditionNameList()
+                logger.info("조건검색 조회성공: %s", condition_list)
 
-                for idx, condition in enumerate(conditionList.split(';')):
-                    if condition:
-                        conditionIdx = condition.split('^')[0]
-                        conditionName = condition.split('^')[1]
+                for condition in condition_list.split(';')[:-1]:
+                    index = condition.split('^')[0]
+                    name = condition.split('^')[1]
 
-                        # 실시간 조건검색 등록
-                        self.kiwoom.SendCondition('COND' + str(idx+1).zfill(3), conditionName, int(conditionIdx), 1)
+                    # 실시간 조건검색 등록
+                    self.kiwoom.SendCondition(SCREEN_CONDITION_SEARCH, name, int(index), 1)
             else:
                 logger.error("조건검색 조회실패: %s", dict(lRet=lRet, sMsg=sMsg))
         except Exception as e:
